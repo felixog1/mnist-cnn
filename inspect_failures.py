@@ -1,3 +1,5 @@
+import json
+
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -11,6 +13,7 @@ VARIANTS = {
     "dropout": dict(dropout_p=0.4),
     "batchnorm": dict(use_batchnorm=True),
     "l2": dict(),
+    "combined": dict(dropout_p=0.4, use_batchnorm=True),
 }
 
 
@@ -62,8 +65,15 @@ if __name__ == "__main__":
         test_accs[name] = test_acc
         print(f"{name:10s} test_loss={test_loss:.4f} test_acc={test_acc:.4f}")
 
-    best_name = max(test_accs, key=test_accs.get)
-    print(f"\nInspecting {best_name} model's predictions")
+    # Select which model to inspect by *validation* loss, not test accuracy --
+    # using test results to pick a model would defeat the point of holding it out.
+    best_val_losses = {}
+    for name in VARIANTS:
+        with open(f"runs/{name}/history.json") as f:
+            best_val_losses[name] = min(json.load(f)["history"]["val_loss"])
+    best_name = min(best_val_losses, key=best_val_losses.get)
+    print(f"\nSelected by validation loss: {best_name} (val_loss={best_val_losses[best_name]:.4f})")
+    print(f"Inspecting {best_name} model's predictions")
     model = models[best_name]
 
     failures = collect_examples(model, test_loader, device, want_correct=False)

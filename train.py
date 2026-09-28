@@ -82,5 +82,5 @@ def run_training(model, run_name, epochs=8, lr=1e-3, weight_decay=0.0, batch_siz
 
 
 if __name__ == "__main__":
-    model = CNN()
-    run_training(model, run_name="l2", epochs=8, weight_decay=1e-4)
+    model = CNN(dropout_p=0.4, use_batchnorm=True)
+    run_training(model, run_name="combined", epochs=8, weight_decay=1e-4)
