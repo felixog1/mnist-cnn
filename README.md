@@ -1,131 +1,78 @@
-# MNIST CNN — Regularization Comparison
+# MNIST CNN: regularization comparison
 
-A small CNN trained on MNIST to study how dropout, batch normalization, and L2
-weight decay each affect training dynamics and generalization, starting from
-one shared baseline architecture.
+A small CNN on MNIST, used to see what dropout, batch norm and L2 each do to overfitting, starting from one shared baseline. Plus a CPU vs GPU timing study.
+
+## Takeaways
+
+- The baseline overfits mildly (val loss rises after epoch 6). All regularized variants have a smaller train/val gap than the baseline, but only combined's reduction is clearly larger than single-run noise.
+- The differences between dropout, batch norm and L2 are within single-run noise, so this is not a ranking.
+- On GPU, data loading (not compute) was the bottleneck: about 80% of epoch time. Preloading the data gave a 7.8x GPU speedup instead of 1.8x.
 
 ## Setup
 
-- **Data**: MNIST, split into 55k train / 5k val (from the original 60k train
-  set) / 10k test (held out, untouched until final evaluation). Inputs
-  normalized to the dataset's known mean/std (0.1307, 0.3081).
-- **Architecture**: conv(1→32, 3x3) → [bn] → relu → maxpool(2x2) →
-  conv(32→64, 3x3) → [bn] → relu → maxpool(2x2) → flatten → [dropout] →
-  fc(3136→128) → relu → [dropout] → fc(128→10).
-- **Training**: CrossEntropyLoss, Adam, lr=1e-3, batch size 64, 8 epochs,
-  same random seed for the train/val split across all runs.
-- The first four variants change exactly one thing at a time relative to the
-  baseline, so differences in the curves are attributable to that one change.
-  A fifth `combined` variant stacks all three together.
+- **Data:** 55k train / 5k val / 10k test (test used only for final evaluation; see the correction under Test results). Normalized with mean 0.1307, std 0.3081.
+- **Model:** conv(1→32) → [bn] → relu → pool → conv(32→64) → [bn] → relu → pool → flatten → [dropout] → fc(3136→128) → relu → [dropout] → fc(128→10). About 420K params.
+- **Training:** Adam, lr 1e-3, batch 64, 8 epochs, one run per variant, same train/val split for all.
+- **Variants:** baseline, dropout (p=0.4), batch norm, L2 (weight_decay=1e-4), and all three combined. The first four each change one thing from the baseline.
 
-## Variants and results (epoch 8)
+## Results (epoch 8)
 
-| Variant | Train Acc | Val Acc | Train/Val Gap | Notes |
-|---|---|---|---|---|
-| Baseline | 99.65% | 98.86% | 0.79 pt | Val loss rises after epoch 6 — mild overfitting |
-| + Dropout (p=0.4) | 98.91% | 98.98% | -0.07 pt | Slowest to converge, smallest gap, best val loss overall |
-| + BatchNorm | 99.55% | 99.02% | 0.53 pt | Fastest early convergence, modest gap reduction |
-| + L2 (weight_decay=1e-4) | 99.51% | 99.00% | 0.51 pt | Same convergence shape as baseline, uniformly smaller gap |
-| + Combined (dropout + batchnorm + L2) | 98.52% | 99.10% | -0.58 pt | Still under-fit at epoch 8 — regularizers compound, need more epochs to reach full capacity |
+| Variant | Train acc | Val acc | Gap |
+|---|---|---|---|
+| Baseline | 99.75% | 98.86% | 0.89 pt |
+| Dropout | 99.67% | 98.98% | 0.69 pt |
+| BatchNorm | 99.72% | 99.02% | 0.70 pt |
+| L2 | 99.75% | 99.00% | 0.75 pt |
+| Combined | 99.59% | 99.10% | 0.49 pt |
 
-See `runs/comparison.png` for train/val loss and accuracy curves across all
-five variants (one color per variant, dashed = train, solid = val).
+Train accuracy is re-measured in eval mode after training (`gap_check.py`), so it's comparable to val. The accuracy logged during training is not: it's measured in train mode (dropout on, noisy batch-norm stats) and averaged over a changing epoch. That made dropout and combined look under-fit and produced negative gaps, which were a measurement artifact.
 
-### What each addition changed, and why
+Standard error on a 5k val set is about 0.14 pt, so the 0.69 to 0.75 pt gaps for dropout, batch norm and L2 can't be told apart, and L2's 0.14 pt reduction from baseline is itself within noise. Combined's 0.40 pt reduction is the only one that clearly stands out.
 
-- **Dropout** randomly zeroes a fraction of activations each forward pass
-  during training, preventing neurons from co-adapting and approximating an
-  ensemble of subnetworks at inference time. This produced the clearest
-  overfitting fix here: training accuracy actually *dropped* (the model can't
-  fit the training set as tightly), but validation performance held or
-  slightly improved, and the train/val gap essentially disappeared.
-- **Batch normalization** re-normalizes each layer's pre-activations to
-  zero-mean/unit-variance (with a learned scale/shift), keeping gradient
-  scale stable across layers as weights update. Its main claimed benefit is
-  faster convergence — visible here in epoch-1/2 val accuracy being slightly
-  higher than baseline — but the effect was modest, since this network is
-  shallow and already trained with Adam, which itself adapts per-parameter
-  step sizes and mitigates part of what batch norm addresses.
-- **L2 weight decay** penalizes large weights, biasing the model toward
-  smoother functions that are less able to memorize training-specific noise.
-  At `weight_decay=1e-4` the effect was a modest, uniform reduction in the
-  train/val gap without changing the shape of the training curve — same
-  convergence speed as baseline, just consistently less overfit.
-- **Combining all three** compounds each one's "handicap training" effect
-  (dropout zeroes activations, L2 pulls weights toward zero, batch norm adds
-  batch-statistics noise), so the model needs more epochs to reach the same
-  training fit the individual variants got to alone. At a fixed 8 epochs it's
-  still visibly under-fit (lowest train accuracy of all five, and still
-  climbing) — regularization strength is a budget spent against the epoch
-  budget, not a free win.
+`runs/comparison.png` plots train and val loss/accuracy per epoch for all five variants (dashed = train, solid = val). The dashed train curves are the train-mode numbers logged during training, so dropout and combined look worse there than they really are.
 
-## Test set results
+**What each one does**
+- **Dropout:** randomly zeroes activations during training. Lowest single-epoch val loss of any variant (0.0287 at epoch 7), and its val loss trended down through epoch 7 instead of turning up like the baseline's.
+- **Batch norm:** normalizes layer inputs. Slightly faster early convergence; small effect here because the network is shallow and Adam already adapts step sizes.
+- **L2:** penalizes large weights. Smaller gap, same curve shape as baseline. Note that `weight_decay` in `torch.optim.Adam` is coupled L2: the penalty is added to the gradient and then rescaled by Adam, so its strength depends on gradient size. `AdamW` applies it directly to the weights (decoupled) and is usually what you want.
+- **Combined:** smallest gap and highest val accuracy, with slightly lower train accuracy, as expected from stronger regularization.
 
-The test set (10k images, separate from the 55k/5k train/val split) was
-touched exactly once, at the end, after all training and model-selection
-decisions were already made from validation metrics — using it earlier or to
-pick a variant would bias it as a measure of generalization.
+## Test results
 
-**Model selection was based on validation loss, not test accuracy.** Dropout
-had the best validation loss (0.0287) of all five variants and was selected
-as the "final" model before test evaluation. For comparison purposes only,
-test accuracy is reported for all five below:
+Model selection uses validation loss only, measured on the checkpoint that's actually tested. Only the epoch-8 weights are saved, so the rule is lowest epoch-8 val loss: combined (0.0312) over dropout (0.0347).
 
-| Variant | Test Loss | Test Acc |
-|---|---|---|
-| Baseline | 0.0428 | 98.94% |
-| Dropout (selected) | 0.0254 | 99.21% |
-| BatchNorm | 0.0405 | 98.83% |
-| L2 | 0.0291 | 98.99% |
-| Combined | 0.0237 | 99.24% |
+| Variant | Epoch-8 val loss | Test loss | Test acc |
+|---|---|---|---|
+| Baseline | 0.0457 | 0.0428 | 98.94% |
+| Dropout | 0.0347 | 0.0254 | 99.21% |
+| BatchNorm | 0.0479 | 0.0405 | 98.83% |
+| L2 | 0.0419 | 0.0291 | 98.99% |
+| Combined (selected) | 0.0312 | 0.0237 | 99.24% |
 
-Note combined edges out dropout slightly on this particular test set
-(99.24% vs 99.21%) — but since combined wasn't the validation-selected model,
-this difference isn't used to change the selection after the fact. That
-would be using the test set to make a modeling decision, exactly what
-holding it out is meant to prevent. It's also a small enough gap (3 examples
-out of 10,000) to plausibly be noise rather than a real difference.
+**Correction:** an earlier version selected dropout using its best val loss across epochs (0.0287, at epoch 7). Those epoch-7 weights were never saved, so the selection was based on a number the tested model didn't have. The rule was corrected after the test results had been seen, so the test number isn't a fully clean held-out estimate. It's also only 3 images better than dropout out of 10,000, which is noise. The proper fix for future runs is to save the best-val-loss checkpoint during training (early stopping) and select on that.
 
-### What the errors look like
-
-`inspect_failures.py` pulls misclassified and correctly-classified examples
-from the selected (dropout) model on the test set:
-
-- `runs/failures.png` — of 10,000 test images, only 16-17 are misclassified.
-  Nearly all are genuinely ambiguous or badly-formed handwriting (unclosed
-  loops, ambiguous strokes) rather than clean digits the model should
-  obviously get right — a sign the model learned real digit structure rather
-  than a spurious shortcut.
-- `runs/successes.png` — for contrast, correctly classified examples are
-  mostly clean, unambiguous handwriting.
+**Errors:** the combined model gets 76 of 10,000 test images wrong. `runs/failures.png` shows the first 16. Most are ambiguous or badly formed, and many are the same images the dropout model got wrong. A few are readable digits, and 5 of the 16 are predicted as 5 (mostly 3s and 9s). The other 60 haven't been inspected.
 
 ## CPU vs GPU timing
 
-Same baseline config, 3 epochs, single run each on CPU and GPU
-(NVIDIA RTX 4070 Laptop GPU):
+Training throughput only (forward, backward, optimizer step), RTX 4070 Laptop vs the laptop CPU. One untimed warmup epoch, then the mean of 3 timed epochs, with `torch.cuda.synchronize()` around each.
 
-| Device | Time (3 epochs) | Time/epoch |
-|---|---|---|
-| CPU | 60.7s | 20.2s |
-| GPU (CUDA) | 34.2s | 11.4s |
+| Setup | CPU s/epoch | GPU s/epoch | Speedup |
+|---|---|---|---|
+| DataLoader, batch 64 (real pipeline) | 14.00 | 7.87 | 1.8x |
+| Preloaded on device, batch 64 | 12.43 | 1.59 | 7.8x |
+| Preloaded on device, batch 512 | 10.79 | 0.83 | 13.0x |
 
-**~1.8x speedup on GPU.** This is a modest speedup compared to the large
-numbers often quoted for GPU training — expected here because the model is
-small (2 conv layers, ~400K params) and batch size (64) is small, so there
-isn't enough parallel work per batch to fully utilize the GPU, and per-batch
-overhead (kernel launches, host↔device transfers) eats into the win. Larger
-models, larger batches, and larger inputs are where GPU speedups grow much
-more dramatically.
+- **Data loading is the bottleneck.** The GPU made compute fast, but the DataLoader (`num_workers=0`, one image at a time in Python) didn't get faster, so it now takes about 80% of the GPU epoch. On CPU, compute dominates, so removing the DataLoader saves only 1.6s.
+- **Small batches underuse the GPU.** Batch 64 to 512 halves GPU time but barely changes CPU time. (Larger batches also mean fewer weight updates per epoch, so this isn't a free speedup.)
+- **Not yet tested:** why data loading costs more in the GPU run (6.3s vs 1.6s). Next step is `num_workers > 0` with `pin_memory=True`. Preloading only works here because MNIST is small.
 
 ## Files
 
-- `data.py` — MNIST loading, train/val/test split, normalization.
-- `model.py` — configurable `CNN` class (dropout_p, use_batchnorm flags).
-- `train.py` — training loop, per-epoch logging, saves history + checkpoint
-  per run under `runs/<name>/`.
-- `plot_runs.py` — reads all saved runs and plots loss/accuracy comparison.
-- `timing_comparison.py` — CPU vs GPU wall-clock comparison.
-- `inspect_failures.py` — final test-set evaluation for all variants, plus
-  misclassified/correct example grids for the validation-selected model.
-- `runs/` — one folder per run (`baseline`, `dropout`, `batchnorm`, `l2`,
-  `combined`), each with `history.json` (metrics) and `model.pth` (weights).
+- `data.py`: loading, split, normalization
+- `model.py`: configurable `CNN` (dropout_p, use_batchnorm)
+- `train.py`: training loop; saves history and weights to `runs/<name>/`
+- `plot_runs.py`: loss/accuracy comparison plot
+- `gap_check.py`: eval-mode train accuracy from saved checkpoints
+- `inspect_failures.py`: test evaluation for all variants, plus error and success grids
+- `timing_comparison.py`: CPU vs GPU benchmark; results in `runs/timing_summary.json`

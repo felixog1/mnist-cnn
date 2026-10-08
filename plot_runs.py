@@ -9,8 +9,6 @@ RUNS_DIR = "runs"
 def load_histories():
     histories = {}
     for name in sorted(os.listdir(RUNS_DIR)):
-        if name.startswith("timing_"):
-            continue  # timing benchmark runs, not part of the variant comparison
         path = os.path.join(RUNS_DIR, name, "history.json")
         if os.path.exists(path):
             with open(path) as f:

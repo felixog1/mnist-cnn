@@ -24,7 +24,8 @@ def load_model(name, kwargs, device):
     return model
 
 
-def collect_examples(model, loader, device, want_correct, limit=16):
+def collect_examples(model, loader, device, want_correct, limit=None):
+    """Scans the loader; limit=None scans everything so len() is the true total."""
     examples = []
     with torch.no_grad():
         for images, labels in loader:
@@ -33,9 +34,9 @@ def collect_examples(model, loader, device, want_correct, limit=16):
             mask = (preds == labels) if want_correct else (preds != labels)
             for img, true, pred in zip(images[mask], labels[mask], preds[mask]):
                 examples.append((img.cpu(), true.item(), pred.item()))
-            if len(examples) >= limit:
+            if limit is not None and len(examples) >= limit:
                 break
-    return examples[:limit]
+    return examples if limit is None else examples[:limit]
 
 
 def plot_grid(examples, title, out_path):
@@ -65,20 +66,21 @@ if __name__ == "__main__":
         test_accs[name] = test_acc
         print(f"{name:10s} test_loss={test_loss:.4f} test_acc={test_acc:.4f}")
 
-    # Select which model to inspect by *validation* loss, not test accuracy --
-    # using test results to pick a model would defeat the point of holding it out.
-    best_val_losses = {}
+    # Select by validation loss, never test. Use the final epoch's val loss because
+    # model.pth holds the final-epoch weights; a best-epoch value would describe weights we didn't save.
+    final_val_losses = {}
     for name in VARIANTS:
         with open(f"runs/{name}/history.json") as f:
-            best_val_losses[name] = min(json.load(f)["history"]["val_loss"])
-    best_name = min(best_val_losses, key=best_val_losses.get)
-    print(f"\nSelected by validation loss: {best_name} (val_loss={best_val_losses[best_name]:.4f})")
+            final_val_losses[name] = json.load(f)["history"]["val_loss"][-1]
+    best_name = min(final_val_losses, key=final_val_losses.get)
+    print(f"\nSelected by final-epoch validation loss: {best_name} (val_loss={final_val_losses[best_name]:.4f})")
     print(f"Inspecting {best_name} model's predictions")
     model = models[best_name]
 
     failures = collect_examples(model, test_loader, device, want_correct=False)
-    print(f"Found {len(failures)} misclassified examples (showing up to 16)")
-    plot_grid(failures, f"Misclassified test examples ({best_name} model)", "runs/failures.png")
+    n_test = len(test_loader.dataset)
+    print(f"Total misclassified: {len(failures)} / {n_test} test images (showing first 16)")
+    plot_grid(failures[:16], f"Misclassified test examples ({best_name} model)", "runs/failures.png")
 
-    successes = collect_examples(model, test_loader, device, want_correct=True)
+    successes = collect_examples(model, test_loader, device, want_correct=True, limit=16)
     plot_grid(successes, f"Correctly classified test examples ({best_name} model)", "runs/successes.png")
